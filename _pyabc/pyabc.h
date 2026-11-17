@@ -15,7 +15,8 @@ namespace pyabc
 using namespace py;
 ABC_NAMESPACE_USING_NAMESPACE
 
-void init();
+PyObject* init();
+PyObject* PyInit();
 
 } // namespace pyabc
 

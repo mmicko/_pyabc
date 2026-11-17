@@ -11,7 +11,9 @@ namespace pyabc
 namespace
 {
 
-ref<PyObject> python_frame_done_callback{ py::None };
+// Intentionally leaked: a static ref<> would be released by a global destructor
+// after the interpreter is gone, which crashes Python 3 at exit.
+ref<PyObject>& python_frame_done_callback = *new ref<PyObject>( py::None );
 
 void frame_done_callback(int frame, int po, int status)
 {
@@ -64,7 +66,7 @@ ref<PyObject> set_frame_done_callback( PyObject* callback )
 namespace
 {
 
-ref<PyObject> python_command_callback;
+ref<PyObject>& python_command_callback = *new ref<PyObject>(); // intentionally leaked, see above
 
 static int abc_command_callback(Abc_Frame_t * pAbc, int argc, char ** argv)
 {

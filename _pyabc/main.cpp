@@ -10,17 +10,16 @@ ABC_NAMESPACE_HEADER_END
 
 namespace pyzz
 {
-void zz_init();
+PyObject* zz_init();
 }
 
 int main(int argc, char *argv[])
 {
-    Py_NoSiteFlag = 1;
-
-    PyImport_AppendInittab("_pyabc", pyabc::init);
+    PyImport_AppendInittab("_pyabc", pyabc::PyInit);
     PyImport_AppendInittab("_pyzz", pyzz::zz_init);
 
-    py::initialize interpreter(argv[0]);
+    // do not import site, as the Python 2 version did with Py_NoSiteFlag
+    py::initialize interpreter(argv[0], 1, false);
 
     try
     {

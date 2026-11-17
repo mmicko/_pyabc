@@ -320,7 +320,7 @@ ref<PyObject> _is_func_iso(PyObject* args)
     return Int_FromLong( Abc_NtkFunctionalIso( pNtk, iCo1, iCo2, fCommon ) );
 }
 
-void
+PyObject*
 init()
 {
     Abc_Start();
@@ -373,15 +373,33 @@ init()
         { 0 }
     };
 
-    borrowed_ref<PyObject> mod = InitModule3(
+    static PyModuleDef pyabc_module = {
+        PyModuleDef_HEAD_INIT,
         "_pyabc",
-        pyabc_methods,
-        "A Python interface to ABC"
-    );
+        "A Python interface to ABC",
+        -1,
+        pyabc_methods
+    };
+
+    ref<PyObject> mod = safe_ref( PyModule_Create(&pyabc_module) );
 
     cex::initialize(mod);
 
     sys_init();
+
+    return mod.release();
+}
+
+PyObject*
+PyInit()
+{
+    try
+    {
+        return init();
+    }
+    PYTHONWRAPPER_CATCH
+
+    return NULL;
 }
 
 } // namespace pyabc

@@ -86,14 +86,14 @@ import os
 import fcntl
 import errno
 import signal
-import select
+import selectors
 import time
 import heapq
 import collections
 
 from contextlib import contextmanager
 
-import cStringIO
+import io
 import pickle
 
 import traceback
@@ -106,27 +106,21 @@ def eintr_retry_call(f, *args, **kwds):
     while True:
         try:
             return f(*args, **kwds)
-        except select.error as (e, msg):
-            if e != errno.EINTR:
-                raise
-        except (OSError, IOError) as e:
+        except OSError as e:
             if e.errno != errno.EINTR:
-                raise e
+                raise
 
 
 def eintr_retry_nonblocking(f, *args, **kwds):
     while True:
         try:
             return f(*args, **kwds)
-        except (OSError, IOError) as e:
+        except OSError as e:
             if e.errno == errno.EINTR:
                 continue
             if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
                 return None
             raise
-        except select.error as (e, msg):
-            if e != errno.EINTR:
-                raise
 
 
 def _set_non_blocking(fd):
@@ -188,16 +182,23 @@ class base_handler(object):
 
 
 class event_loop(object):
+    """
+    A minimal event loop over pipe file descriptors.
+
+    Uses the selectors module, which picks the best mechanism available
+    (epoll on Linux, kqueue on macOS/BSD, poll/select elsewhere). End of
+    file on a read end, or EPIPE on a write end, is reported as a hangup.
+    """
 
     def __init__(self):
 
-        self.epoll = select.epoll()
+        self.selector = selectors.DefaultSelector()
         self.fd_to_handler = {}
         self.keep_alive_fds = set()
         self.results = []
 
-    def register(self, h, fd, eventmask = select.EPOLLIN | select.EPOLLOUT, keep_alive=True):
-        
+    def register(self, h, fd, events=selectors.EVENT_READ, keep_alive=True):
+
         assert fd not in self.fd_to_handler
         self.fd_to_handler[fd] = h
 
@@ -205,7 +206,7 @@ class event_loop(object):
             assert fd not in self.keep_alive_fds
             self.keep_alive_fds.add(fd)
 
-        self.epoll.register(fd, eventmask)
+        self.selector.register(fd, events)
 
     def unregister(self, fd):
 
@@ -213,7 +214,7 @@ class event_loop(object):
         del self.fd_to_handler[fd]
         self.keep_alive_fds.discard(fd)
 
-        self.epoll.unregister(fd)
+        self.selector.unregister(fd)
 
     def add_result(self, res):
 
@@ -232,6 +233,28 @@ class event_loop(object):
             for res in results:
                 yield res
 
+    def _on_readable(self, h, fd):
+
+        try:
+            data = eintr_retry_nonblocking(os.read, fd, 1 << 16)
+        except OSError:
+            h.on_error(fd)
+            return
+
+        if data is None:
+            return          # spurious wakeup, nothing to read yet
+        elif data:
+            h.on_data(fd, data)
+        else:
+            h.on_hangup(fd) # end of file: the other side closed the pipe
+
+    def _on_writable(self, h, fd):
+
+        try:
+            h.on_ready(fd)
+        except BrokenPipeError:
+            h.on_hangup(fd) # the reader closed the pipe
+
     def poll(self):
 
         for res in self.iter_results():
@@ -239,31 +262,27 @@ class event_loop(object):
 
         while self.keep_alive_fds:
 
-            for fd, event in eintr_retry_call( self.epoll.poll ):
+            for key, events in eintr_retry_call( self.selector.select ):
 
-                assert fd in self.fd_to_handler
-                h = self.fd_to_handler[fd]
+                fd = key.fd
 
-                if event & select.EPOLLIN:
-                    data = eintr_retry_nonblocking(os.read, fd, 1 << 16)
-                    if data:
-                        h.on_data(fd, data)
+                if events & selectors.EVENT_READ:
+                    h = self.fd_to_handler.get(fd)
+                    if h is not None:
+                        self._on_readable(h, fd)
 
-                if event & select.EPOLLOUT:
-                    h.on_ready(fd)
-
-                if event & select.EPOLLHUP:
-                    h.on_hangup(fd)
-
-                if event & select.EPOLLERR:
-                    h.on_error(fd)
+                if events & selectors.EVENT_WRITE:
+                    # a handler may have unregistered this fd while reading
+                    h = self.fd_to_handler.get(fd)
+                    if h is not None:
+                        self._on_writable(h, fd)
 
             for res in self.iter_results():
                 yield res
 
     def close(self):
 
-        self.epoll.close()
+        self.selector.close()
 
 
 class signal_event_handler(base_handler):
@@ -283,7 +302,7 @@ class signal_event_handler(base_handler):
     def register(self, keep_alive=True):
         
         if not self.registered:
-            self.loop.register(self, self.sig_fd_read, select.EPOLLIN, keep_alive)
+            self.loop.register(self, self.sig_fd_read, selectors.EVENT_READ, keep_alive)
             self.registered = True
 
     def unregister(self):
@@ -316,7 +335,7 @@ class timer_manager(signal_event_handler):
     def _install_signal_handler(self, fd):
 
         def callback(*args):
-            eintr_retry_call(os.write, fd, "X" )
+            eintr_retry_call(os.write, fd, b"X" )
         self.old_signal = signal.signal(signal.SIGALRM, callback)
 
     def _uninstall_signal_handler(self, fd):
@@ -360,12 +379,12 @@ class process_manager(signal_event_handler):
     def _install_signal_handler(self, fd):
         _pyabc.add_sigchld_fd(fd);
 
-    def _uninstall_signal_handler(seld):
+    def _uninstall_signal_handler(self, fd):
         _pyabc.remove_sigchld_fd(fd)
 
     def kill_all(self):
         
-        for pid, h in self.pid_to_handler.iteritems():
+        for pid, h in self.pid_to_handler.items():
             h.kill()
     
     def clean(self):
@@ -396,7 +415,7 @@ class process_manager(signal_event_handler):
 
     def _reap(self):
 
-        for pid, h in self.pid_to_handler.items():
+        for pid, h in list(self.pid_to_handler.items()):
             rc, status = eintr_retry_call( os.waitpid, pid, os.WNOHANG )
             if rc > 0:
                 del self.pid_to_handler[pid]
@@ -414,7 +433,7 @@ class forked_process_handler(base_handler):
     def __init__(self, loop, f):
 
         super(forked_process_handler, self).__init__(loop)
-        self.buf = cStringIO.StringIO()
+        self.buf = io.BytesIO()
         
         self.f = f
         self.token = None
@@ -446,7 +465,7 @@ class forked_process_handler(base_handler):
         _pyabc.atfork_child_add(self.pw)
         try:
             res = self.f()
-            with os.fdopen(self.pw, "w") as fout:
+            with os.fdopen(self.pw, "wb") as fout:
                 pickle.dump(res, fout)
         except:
             traceback.print_exc(file=sys.stderr)
@@ -544,7 +563,7 @@ class _splitter(object):
 
     def cleanup(self):
 
-        for uid, h in self.uid_to_handler.iteritems():
+        for uid, h in self.uid_to_handler.items():
             h.kill()
 
         for _ in self.results():
@@ -669,7 +688,7 @@ class base_redirect_handler(base_handler):
     def write_stdin(self, data):
 
         if data and not self.stdin_buf:
-            self.loop.register(self, self.stdin_write)
+            self.loop.register(self, self.stdin_write, selectors.EVENT_WRITE)
 
         self.stdin_buf.append(data)
 
@@ -843,12 +862,12 @@ if __name__ == "__main__":
     # Use the function split_all() to run these functions in separate processes:
 
     for res in split_all(funcs, timeout=4):
-        print res
+        print(res)
 
     # Alternatively, quit after the first process returns:
 
     for res in split_all(funcs):
-        print res
+        print(res)
         break
 
     # For operations with ABC that save and restore status
@@ -857,7 +876,7 @@ if __name__ == "__main__":
 
     def abc_f(truth):
         import os
-        print "pid=%d, abc_f(%s)"%(os.getpid(), truth)
+        print("pid=%d, abc_f(%s)"%(os.getpid(), truth))
         pyabc.run_command('read_truth %s'%truth)
         pyabc.run_command('strash')
         return 100
@@ -870,7 +889,7 @@ if __name__ == "__main__":
     best = None
 
     for i, res in abc_split_all(funcs):
-        print i, res
+        print(i, res)
         if best is None:\
             # save state
             best = abc_state()

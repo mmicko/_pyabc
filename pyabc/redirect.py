@@ -33,7 +33,7 @@ def save_stdout( src = sys.stdout ):
     own = True
     
     try:
-        with os.fdopen( fd, "w", 0) as f:
+        with os.fdopen( fd, "w", 1) as f:
             own = False
             yield f
     except:

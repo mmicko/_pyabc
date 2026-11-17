@@ -1,10 +1,12 @@
+#include <Python.h>
+
 namespace pyabc
 {
-    void init();
+    PyObject* PyInit();
 }
 
 extern "C"
-void init_pyabc()
+PyMODINIT_FUNC PyInit__pyabc()
 {
-    pyabc::init();
+    return pyabc::PyInit();
 }

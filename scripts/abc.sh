@@ -38,6 +38,8 @@ export PATH="${abc_root}/bin:$PATH"
 
 export PYTHONPATH="${abc_root}/lib":"${PYTHONPATH}"
 export LD_LIBRARY_PATH="${abc_root}/lib":"${LD_LIBRARY_PATH}"
+# macOS uses DYLD_LIBRARY_PATH instead of LD_LIBRARY_PATH
+export DYLD_LIBRARY_PATH="${abc_root}/lib":"${DYLD_LIBRARY_PATH}"
 
 if [ -f "${abc_root}/lib/python_library.zip" ] ; then
     export PYTHONHOME="${abc_root}"
@@ -52,6 +54,7 @@ if [ "$1" = "--debug" ]; then
     echo export PYTHONHOME=$PYTHONHOME
     echo export PYTHONPATH=$PYTHONPATH
     echo export LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+    echo export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH
 fi
 
 if [ -f "${abc_root}/lib/super_prove/abc.rc" ] ; then

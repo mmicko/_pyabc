@@ -23,12 +23,12 @@ def _cmd_callback(args):
 
         return res
 
-    except Exception, e:
+    except Exception as e:
 
         import traceback
         traceback.print_exc()
 
-    except SystemExit, se:
+    except SystemExit as se:
         pass
 
     return 0
@@ -55,11 +55,11 @@ def cmd_python(cmd_args):
     options, args = parser.parse_args(cmd_args)
 
     if options.version:
-        print sys.version
+        print(sys.version)
         return 0
 
     if options.cmd:
-        exec options.cmd in _python_command_globals
+        exec(options.cmd, _python_command_globals)
         return 0
 
     scripts_dir = os.getenv('ABC_PYTHON_SCRIPTS', ".")
@@ -67,12 +67,12 @@ def cmd_python(cmd_args):
 
     for fname in args[1:]:
         if os.path.isabs(fname):
-            execfile(fname, _python_command_globals)
+            exec(compile(open(fname, "rb").read(), fname, 'exec'), _python_command_globals)
         else:
             for d in scripts_dirs:
                 fname = os.path.join(scripts_dir, fname)
                 if os.path.exists(fname):
-                    execfile(fname, _python_command_globals)
+                    exec(compile(open(fname, "rb").read(), fname, 'exec'), _python_command_globals)
                     break
             else:
                 raise RuntimeError('file "%s" not found'% fname)
